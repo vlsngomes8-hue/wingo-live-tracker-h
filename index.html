@@ -1,1 +1,153 @@
 
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WinGo 1-Minute Tracker</title>
+<style>
+body{margin:0;padding:16px;background:#0b1220;color:white;font-family:Arial,sans-serif}
+main{max-width:900px;margin:auto}
+h1{color:#60a5fa}
+.card{background:#172438;padding:16px;margin:12px 0;border-radius:12px}
+button{padding:11px 16px;border:0;border-radius:8px;background:#2563eb;color:white;margin:4px}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+th,td{padding:11px 6px;border-bottom:1px solid #34445b;text-align:left;font-size:13px}
+.small{color:#4ade80}.big{color:#fb7185}
+.muted{color:#9ca3af;font-size:13px}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>WinGo 1-Minute Live Tracker</h1>
+<p class="muted">Live results · Saved history · Repeated number analysis</p>
+
+<div class="card">
+<h3>Latest Result</h3>
+<h1 id="latest">Waiting...</h1>
+<p id="period">Period: —</p>
+<p id="status">Connecting to live API...</p>
+<button onclick="refresh()">Refresh Now</button>
+<button onclick="downloadCSV()">Download CSV</button>
+</div>
+
+<div class="card">
+<h3>History Statistics</h3>
+<p>Total saved: <b id="total">0</b></p>
+<p>Big (5–9): <b id="bigCount">0</b></p>
+<p>Small (0–4): <b id="smallCount">0</b></p>
+<p>Repeated digits: <b id="repeatCount">0</b></p>
+</div>
+
+<div class="card">
+<h3>Repeated Digit Analysis</h3>
+<div id="analysis">Waiting for data...</div>
+</div>
+
+<div class="card">
+<h3>WinGo History</h3>
+<div class="scroll">
+<table>
+<thead><tr><th>Period</th><th>Digit</th><th>Big/Small</th><th>Time</th></tr></thead>
+<tbody id="history"></tbody>
+</table>
+</div>
+</div>
+
+<div class="card muted">
+Storage note: This version saves history in this browser only. It cannot collect results while your phone is off. A cloud database and scheduled server collector are still needed for permanent online history. Live API access also depends on browser CORS permission.
+</div>
+</main>
+
+<script>
+const API="https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json?pageNo=1&pageSize=100";
+const KEY="wingo_1m_saved_history";
+let data=[];
+try{data=JSON.parse(localStorage.getItem(KEY)||"[]")}catch(e){data=[]}
+
+function normalize(x){
+ const period=String(x.issueNumber??x.period??x.issue??"");
+ const raw=x.number??x.result??x.openNumber??x.winningNumber??"";
+ const match=String(raw).match(/[0-9]/);
+ if(!period||!match)return null;
+ const digit=Number(match[0]);
+ return {period,digit,size:digit>=5?"Big":"Small",
+ time:x.drawTime??x.time??x.timestamp??""};
+}
+
+function save(){
+ localStorage.setItem(KEY,JSON.stringify(data));
+}
+
+async function refresh(){
+ const status=document.getElementById("status");
+ status.textContent="Checking live results...";
+ try{
+  const response=await fetch(API,{cache:"no-store"});
+  if(!response.ok)throw Error("HTTP "+response.status);
+  const json=await response.json();
+  const list=json?.data?.list||json?.data?.records||json?.list||json?.records;
+  if(!Array.isArray(list))throw Error("Unrecognized API response");
+  let added=0,conflicts=0;
+  for(const item of list){
+   const r=normalize(item);
+   if(!r)continue;
+   const old=data.find(a=>a.period===r.period);
+   if(old){if(old.digit!==r.digit)conflicts++;continue}
+   data.push(r);added++;
+  }
+  data.sort((a,b)=>b.period.localeCompare(a.period,undefined,{numeric:true}));
+  save();
+  status.textContent="Connected · "+added+" new records · "+conflicts+" conflicts";
+  render();
+ }catch(e){
+  status.textContent="API error: "+e.message+" (CORS or API response issue)";
+  render();
+ }
+}
+
+function render(){
+ document.getElementById("total").textContent=data.length;
+ const big=data.filter(x=>x.size==="Big").length;
+ const small=data.filter(x=>x.size==="Small").length;
+ document.getElementById("bigCount").textContent=big;
+ document.getElementById("smallCount").textContent=small;
+ if(data.length){
+  document.getElementById("latest").textContent=data[0].digit+" · "+data[0].size;
+  document.getElementById("period").textContent="Period: "+data[0].period;
+ }else{
+  document.getElementById("latest").textContent="No results";
+ }
+ const counts={};
+ data.forEach(x=>counts[x.digit]=(counts[x.digit]||0)+1);
+ const repeated=Object.entries(counts).filter(x=>x[1]>1);
+ document.getElementById("repeatCount").textContent=repeated.length;
+ document.getElementById("analysis").innerHTML=
+ repeated.length?repeated.map(x=>x[0]+" appeared "+x[1]+" times").join("<br>"):"No repeated digits yet";
+ document.getElementById("history").innerHTML=data.slice(0,200).map(x=>
+ "<tr><td>"+escapeHTML(x.period)+"</td><td><b>"+x.digit+"</b></td><td class='"+x.size.toLowerCase()+"'>"+x.size+"</td><td>"+escapeHTML(String(x.time))+"</td></tr>"
+ ).join("");
+}
+
+function escapeHTML(s){
+ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function downloadCSV(){
+ const rows=[["Period","Digit","Size","Time"],...data.map(x=>[x.period,x.digit,x.size,x.time])];
+ const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\n");
+ const a=document.createElement("a");
+ a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+ a.download="wingo-history.csv";
+ a.click();
+ URL.revokeObjectURL(a.href);
+}
+
+render();
+refresh();
+setInterval(refresh,30000);
+</script>
+</body>
+</html>
